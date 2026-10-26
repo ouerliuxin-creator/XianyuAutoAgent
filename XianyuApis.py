@@ -59,10 +59,10 @@ class XianyuApis:
             # 获取当前cookies的字符串形式
             cookie_str = '; '.join([f"{cookie.name}={cookie.value}" for cookie in self.session.cookies])
             
-            # 读取.env文件
-            env_path = os.path.join(os.getcwd(), '.env')
+            # 读取.env文件（路径可由 ENV_FILE 指定，容器内指向持久化卷）
+            env_path = os.path.join(os.getcwd(), os.getenv("ENV_FILE") or ".env")
             if not os.path.exists(env_path):
-                logger.warning(".env文件不存在，无法更新COOKIES_STR")
+                logger.warning(f"配置文件不存在({env_path})，无法更新COOKIES_STR")
                 return
                 
             with open(env_path, 'r', encoding='utf-8') as f:
@@ -204,10 +204,23 @@ class XianyuApis:
                     if 'RGV587_ERROR' in error_msg or '被挤爆啦' in error_msg:
                         logger.error(f"❌ 触发风控: {ret_value}")
                         logger.error("🔴 系统目前无法自动解决，请进入闲鱼网页版-点击消息-过滑块-复制最新的Cookie")
-                        
+
+                        # 非交互环境（容器 / systemd / CI）下没有 TTY，input() 会抛
+                        # EOFError 并掩盖真实错误。此处直接以退出码 78 终止，
+                        # 由编排系统依据 restart 策略处理。
+                        non_interactive = os.getenv("NON_INTERACTIVE", "").strip().lower() in {"1", "true", "yes", "on"}
+                        if non_interactive or not (sys.stdin is not None and sys.stdin.isatty()):
+                            logger.error("当前处于非交互环境，无法通过终端输入新 Cookie。")
+                            logger.error("请更新配置文件（ENV_FILE）或环境变量 COOKIES_STR 后重启容器。")
+                            sys.exit(78)
+
                         # 获取用户输入的新Cookie
                         print("\n" + "="*50)
-                        new_cookie_str = input("请输入新的Cookie字符串 (复制浏览器中的完整cookie，直接回车则退出程序): ").strip()
+                        try:
+                            new_cookie_str = input("请输入新的Cookie字符串 (复制浏览器中的完整cookie，直接回车则退出程序): ").strip()
+                        except (EOFError, OSError, KeyboardInterrupt):
+                            logger.error("无法从标准输入读取新 Cookie，请更新配置文件后重启。")
+                            sys.exit(78)
                         print("="*50 + "\n")
                         
                         if new_cookie_str:

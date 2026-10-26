@@ -86,6 +86,33 @@ COOKIES_STR自行在闲鱼网页端获取cookies(网页端F12打开控制台，�
 python main.py
 ```
 
+### 🐳 Docker 部署（推荐用于 7×24 值守）
+
+无需本地安装 Python 环境，适用于 NAS、云服务器、长期在线的家用主机。
+
+```bash
+# 1. 准备配置
+mkdir -p data && cp .env.example data/.env
+vi data/.env                 # 至少填写 API_KEY 与 COOKIES_STR
+
+# 2. 构建并启动
+docker compose up -d --build
+
+# 3. 查看状态与日志
+docker compose ps            # STATUS 显示 (healthy) 即正常
+docker compose logs -f
+```
+
+关键特性：
+
+- **配置与数据持久化**：`./data` 卷存放 `.env`、SQLite 会话库与心跳文件，容器重建不丢失；
+- **Cookie 自动刷新可落盘**：刷新后的 Cookie 写回 `data/.env`，避免重启后反复触发风控；
+- **健康检查**：依据心跳文件新鲜度判断连接是否假死，异常可被编排系统感知；
+- **非 root 运行**：容器内以 uid 10001 执行，配合 `dumb-init` 正确处理 SIGTERM；
+- **提示词热替换**：`prompts/` 只读挂载，改完重启容器即生效，无需重建镜像。
+
+完整的部署说明、配置项清单与故障排查见 **[docs/DOCKER.md](./docs/DOCKER.md)**。
+
 ### 自定义提示词
 
 可以通过编辑 `prompts` 目录下的文件来自定义各个专家的提示词：

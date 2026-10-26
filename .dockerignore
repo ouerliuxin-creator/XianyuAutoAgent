@@ -1,19 +1,35 @@
 .git
-.github
 .gitignore
+.github
+.gitattributes
+.vscode/
+.idea/
+
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-*_prompt.txt
+
+# 密钥与本地配置绝不进入构建上下文
 .env
-.DS_Store
-.vscode/
-*.log
+.env.local
+
+# 用户自定义提示词（仅打包 *_example.txt 模板）
+*_prompt.txt
+
+# 运行时数据
 data/
-images/
+logs/
 backups/
+*.log
+*.db
+
+# 文档与素材，镜像内不需要
+images/
+docs/
+README.md
+LICENSE
+
 Dockerfile
 docker-compose.yml
 .dockerignore
-# README.md 

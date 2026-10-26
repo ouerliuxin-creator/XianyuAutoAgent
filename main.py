@@ -16,6 +16,50 @@ from XianyuAgent import XianyuReplyBot
 from context_manager import ChatContextManager
 
 
+# 配置文件路径。容器化部署时由环境变量指向持久化卷（如 /app/data/.env），
+# 使 Cookie 自动刷新结果在容器重建后仍然保留。
+DEFAULT_ENV_FILE = ".env"
+DEFAULT_HEARTBEAT_FILE = "data/.heartbeat"
+
+
+def env_file_path() -> str:
+    """返回配置文件路径，支持通过 ENV_FILE 环境变量重定向。"""
+    return os.getenv("ENV_FILE") or DEFAULT_ENV_FILE
+
+
+def stdin_is_interactive() -> bool:
+    """判断是否允许交互式输入。
+
+    两层判断：
+      1. NON_INTERACTIVE=1 时强制关闭交互（docker-compose 已默认设置）。
+      2. 否则要求标准输入是 TTY。
+    仅依赖 isatty() 不够可靠——分配了伪终端但没有输入来源时它仍返回 True，
+    因此调用处还需捕获 EOFError 作为兜底。
+    """
+    if os.getenv("NON_INTERACTIVE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+def touch_heartbeat() -> None:
+    """更新心跳文件，供容器 HEALTHCHECK 判断进程与连接是否存活。
+
+    失败不影响主流程：健康检查降级为「文件陈旧」，不应因此中断机器人。
+    """
+    try:
+        path = os.getenv("HEARTBEAT_FILE") or DEFAULT_HEARTBEAT_FILE
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+    except Exception as e:
+        logger.debug(f"更新心跳文件失败: {e}")
+
+
 class XianyuLive:
     def __init__(self, cookies_str):
         self.xianyu = XianyuApis()
@@ -187,6 +231,8 @@ class XianyuLive:
              "pts": int(time.time() * 1000) * 1000, "seq": 0, "timestamp": int(time.time() * 1000)}]}
         await ws.send(json.dumps(msg))
         logger.info('连接注册完成')
+        # 连接可用，刷新健康检查心跳
+        touch_heartbeat()
 
     def is_chat_message(self, message):
         """判断是否为用户聊天消息"""
@@ -563,6 +609,8 @@ class XianyuLive:
             }
             await ws.send(json.dumps(heartbeat_msg))
             self.last_heartbeat_time = time.time()
+            # 心跳发送成功说明 WebSocket 仍可写，刷新健康检查心跳文件
+            touch_heartbeat()
             logger.debug("心跳包已发送")
             return heartbeat_mid
         except Exception as e:
@@ -707,35 +755,52 @@ class XianyuLive:
 
 
 def check_and_complete_env():
-    """检查并补全关键环境变量"""
+    """检查并补全关键环境变量。
+
+    交互式终端下沿用原有的「提示输入」行为；非交互环境（Docker / systemd /
+    CI）下不再调用 input()，否则会抛 EOFError 并留下无意义的 traceback，
+    而是汇总缺失项后以退出码 78（EX_CONFIG）退出，便于编排系统识别。
+    """
     # 定义关键变量及其默认无效值（占位符）
     critical_vars = {
         "API_KEY": "默认使用通义千问,apikey通过百炼模型平台获取",
         "COOKIES_STR": "your_cookies_here"
     }
-    
-    env_path = ".env"
+
+    env_path = env_file_path()
+    interactive = stdin_is_interactive()
     updated = False
-    
+    missing = []
+
     for key, placeholder in critical_vars.items():
         curr_val = os.getenv(key)
-        
+
         # 如果变量未设置，或者值等于占位符
         if not curr_val or curr_val == placeholder:
+            if not interactive:
+                missing.append(key)
+                continue
+
             logger.warning(f"配置项 [{key}] 未设置或为默认值，请输入")
             while True:
-                val = input(f"请输入 {key}: ").strip()
+                try:
+                    val = input(f"请输入 {key}: ").strip()
+                except (EOFError, OSError, KeyboardInterrupt):
+                    # 伪终端但无输入来源（管道 / CI / 后台运行），按非交互处理
+                    logger.error(f"无法从标准输入读取 {key}，按非交互环境处理。")
+                    missing.append(key)
+                    break
                 if val:
                     # 更新当前环境
                     os.environ[key] = val
-                    
+
                     # 尝试持久化到 .env
                     try:
                         # 如果没有.env文件，先创建
                         if not os.path.exists(env_path):
                             with open(env_path, 'w', encoding='utf-8') as f:
                                 pass # Create empty file
-                        
+
                         set_key(env_path, key, val)
                         updated = True
                     except Exception as e:
@@ -743,16 +808,23 @@ def check_and_complete_env():
                     break
                 else:
                     print(f"{key} 不能为空，请重新输入")
-    
+
+    if missing:
+        logger.error("以下必填配置缺失或仍为占位符: " + ", ".join(missing))
+        logger.error("当前处于非交互环境（无 TTY），无法通过终端补全配置。")
+        logger.error(f"请通过环境变量，或在配置文件 {env_path} 中提供上述配置后重启。")
+        sys.exit(78)
+
     if updated:
         logger.info("新的配置已保存/更新至 .env 文件中")
 
 
 if __name__ == '__main__':
-    # 加载环境变量
-    if os.path.exists(".env"):
-        load_dotenv()
-        logger.info("已加载 .env 配置")
+    # 加载环境变量（路径可由 ENV_FILE 指定，容器内指向持久化卷）
+    env_path = env_file_path()
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        logger.info(f"已加载配置文件: {env_path}")
     
     if os.path.exists(".env.example"):
         load_dotenv(".env.example")  # 不会覆盖已存在的变量

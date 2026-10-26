@@ -1,0 +1,5 @@
+# 该目录存放运行时数据，随容器挂载到 /app/data：
+#   .env            配置（含 Cookie，Cookie 刷新后会自动写回）
+#   chat_history.db SQLite 会话历史
+#   .heartbeat      健康检查心跳文件
+# 首次启动前执行：mkdir -p data && cp .env.example data/.env

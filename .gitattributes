@@ -1,0 +1,12 @@
+# 跨平台换行符策略
+# 强制文本文件统一使用 LF，避免在 Windows 上检出 CRLF 后导致：
+#   - docker/entrypoint.sh 在容器内报 /bin/sh^M: bad interpreter
+#   - Dockerfile 的 RUN 续行解析异常
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
